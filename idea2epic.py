@@ -173,6 +173,10 @@ Rules:
 - Return ONLY valid JSON, no markdown, no explanation"""
 
     response = llm.invoke([HumanMessage(content=prompt)])
+    raw = response.content
+    # Strip markdown code blocks if present
+    raw = raw.replace("```json", "").replace("```", "").strip()
+    hierarchy = json.loads(raw)
 
     try:
         hierarchy = json.loads(response.content)
