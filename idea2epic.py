@@ -5,13 +5,36 @@ Multi-agent LangGraph system that transforms VOC input into structured product b
 
 import os
 import json
-from typing import TypedDict, Literal
+import time
+import logging
+from typing import TypedDict, Literal, Optional
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from dotenv import load_dotenv
-import os
+
 load_dotenv()
+
+# ─────────────────────────────────────────────
+# LOGGING
+# ─────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%H:%M:%S"
+)
+log = logging.getLogger("idea2epic")
+
+# ─────────────────────────────────────────────
+# LANGSMITH TRACING (optional, zero-code-change)
+# Set these in your .env to enable:
+#   LANGCHAIN_TRACING_V2=true
+#   LANGCHAIN_API_KEY=your_langsmith_key
+#   LANGCHAIN_PROJECT=idea2epic
+# LangChain/LangGraph picks them up automatically.
+# ─────────────────────────────────────────────
+
 
 # ─────────────────────────────────────────────
 # 1. SHARED STATE
@@ -74,6 +97,7 @@ Output plain text, no headers or formatting."""
 
     response = llm.invoke([HumanMessage(content=prompt)])
 
+    log.info("[VOC Generator] Done in %.1fs", time.time() - t0)
     return {**state, "voc_input": response.content}
 
 
@@ -81,7 +105,8 @@ def voc_analyst_node(state: RequirementsState) -> RequirementsState:
     """
     Extracts structured stakeholder needs from raw VOC text.
     """
-    llm = get_llm()
+    log.info("[VOC Analyst] Extracting stakeholder needs")
+    t0 = time.time()
 
     prompt = f"""You are a senior business analyst specializing in requirements engineering.
 
@@ -110,9 +135,10 @@ Example format:
     response = llm.invoke([HumanMessage(content=prompt)])
 
     try:
-        needs = json.loads(response.content)
+        needs = json.loads(_strip_json_fences(response.content))
+        log.info("[VOC Analyst] Extracted %d stakeholder needs in %.1fs", len(needs), time.time() - t0)
     except json.JSONDecodeError:
-        # Fallback: wrap raw text if JSON parsing fails
+        log.warning("[VOC Analyst] JSON parse failed — wrapping raw response as fallback")
         needs = [{"raw": response.content}]
 
     return {**state, "stakeholder_needs": needs}
@@ -123,7 +149,9 @@ def requirement_architect_node(state: RequirementsState) -> RequirementsState:
     Builds the Epic → Feature → User Story hierarchy with full traceability.
     This is the core of the pipeline.
     """
-    llm = get_llm()
+    iteration = state.get("iteration", 0)
+    log.info("[Requirement Architect] Building backlog (attempt %d/%d)", iteration + 1, MAX_ITERATIONS)
+    t0 = time.time()
 
     needs_text = json.dumps(state["stakeholder_needs"], indent=2)
 
@@ -179,9 +207,10 @@ Rules:
     hierarchy = json.loads(raw)
 
     try:
-        hierarchy = json.loads(response.content)
+        hierarchy = json.loads(_strip_json_fences(response.content))
         epics = hierarchy.get("epics", [])
     except json.JSONDecodeError:
+        log.warning("[Requirement Architect] JSON parse failed — storing raw response")
         epics = [{"raw": response.content}]
 
     # Flatten features and stories for easy access
@@ -193,6 +222,10 @@ Rules:
             for story in feature.get("user_stories", []):
                 user_stories.append(story)
 
+    log.info(
+        "[Requirement Architect] Built %d epics, %d features, %d stories in %.1fs",
+        len(epics), len(features), len(user_stories), time.time() - t0
+    )
     return {**state, "epics": epics, "features": features, "user_stories": user_stories}
 
 
@@ -201,7 +234,8 @@ def quality_checker_node(state: RequirementsState) -> RequirementsState:
     Reviews the full backlog for quality, gaps, and traceability.
     Returns APPROVED or REJECTED with specific feedback.
     """
-    llm = get_llm()
+    log.info("[Quality Checker] Running quality audit (check #%d)", state.get("iteration", 0) + 1)
+    t0 = time.time()
 
     backlog_summary = {
         "epics_count": len(state["epics"]),
@@ -237,15 +271,28 @@ Return JSON:
 
 Return ONLY valid JSON."""
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    response = get_llm().invoke([HumanMessage(content=prompt)])
+    new_iteration = state.get("iteration", 0) + 1
 
     try:
-        result = json.loads(response.content)
+        result = json.loads(_strip_json_fences(response.content))
         approved = result.get("status") == "APPROVED"
         feedback = result.get("feedback", "")
+        score = result.get("score")
+        issues = result.get("issues", [])
+        log.info(
+            "[Quality Checker] Status: %s | Score: %s/10 | Issues: %d | Iteration: %d",
+            result.get("status"), score, len(issues), new_iteration
+        )
     except json.JSONDecodeError:
-        approved = True  # if parsing fails, pass through
-        feedback = ""
+        # Safe default: reject so the architect gets another attempt
+        log.warning("[Quality Checker] JSON parse failed — defaulting to REJECTED for safety")
+        approved = False
+        feedback = "Quality check response could not be parsed. Please regenerate the backlog with stricter JSON formatting."
+        score = None
+        issues = ["Quality auditor response was malformed"]
+
+    log.info("[Quality Checker] Done in %.1fs", time.time() - t0)
 
     return {
         **state,
@@ -270,6 +317,7 @@ def quality_gate(state: RequirementsState) -> Literal["requirement_architect", "
     """Loop back to architect if quality fails. Max 2 retries."""
     if state.get("approved", False) or state.get("iteration", 0) >= 2:
         return "end"
+    log.info("[Quality Gate] REJECTED — sending back to architect for revision")
     return "requirement_architect"
 
 
@@ -326,6 +374,10 @@ def run_pipeline(
     Main entry point. Called by FastAPI.
     Returns the final state with all generated artifacts.
     """
+    log.info("=" * 60)
+    log.info("Pipeline start | domain='%s' | generate_voc=%s", product_domain, generate_voc)
+    t_start = time.time()
+
     pipeline = build_pipeline()
 
     initial_state: RequirementsState = {
@@ -342,6 +394,12 @@ def run_pipeline(
     }
 
     final_state = pipeline.invoke(initial_state)
+
+    log.info(
+        "Pipeline complete | approved=%s | iterations=%d | total=%.1fs",
+        final_state["approved"], final_state["iteration"], time.time() - t_start
+    )
+    log.info("=" * 60)
 
     return {
         "voc_used": final_state["voc_input"],
