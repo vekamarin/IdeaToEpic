@@ -43,7 +43,7 @@ class GenerateRequest(BaseModel):
     )
     voc_input: Optional[str] = Field(
         default="",
-        description="Raw VOC text written by the user. Leave empty if generate_voc is True.",
+        description="Raw VOC text. Leave empty if generate_voc is True.",
         example="Our nurses struggle to see real-time schedule updates..."
     )
     generate_voc: bool = Field(
@@ -59,7 +59,16 @@ class GenerateResponse(BaseModel):
     features: list
     user_stories: list
     quality_approved: bool
+    quality_score: Optional[int]
+    quality_issues: List[str]
     iterations: int
+
+
+class VocOnlyRequest(BaseModel):
+    product_domain: str = Field(
+        ...,
+        example="hospital patient scheduling system"
+    )
 
 
 # ─────────────────────────────────────────────
@@ -68,8 +77,8 @@ class GenerateResponse(BaseModel):
 
 @app.get("/")
 def health_check():
-    """Quick health check — useful for Railway/Render deployment."""
-    return {"status": "ok", "message": "Requirements Generator API is running"}
+    """Health check — useful for Railway/Render/fly.io deployment."""
+    return {"status": "ok", "message": "IdeaToEpic API is running", "version": "2.0.0"}
 
 
 @app.post("/generate", response_model=GenerateResponse)

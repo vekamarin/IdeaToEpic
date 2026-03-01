@@ -90,18 +90,17 @@ def get_llm() -> ChatGoogleGenerativeAI:
 
 
 # ─────────────────────────────────────────────
-# 3. AGENT NODES
+# 3. SHARED PROMPT BUILDER
+# Centralised here so api.py can import it — single source of truth.
 # ─────────────────────────────────────────────
 
-def voc_generator_node(state: RequirementsState) -> RequirementsState:
+def build_voc_prompt(product_domain: str) -> str:
     """
-    Generates a realistic VOC if the user didn't provide one.
-    Only runs when generate_voc = True.
+    Returns the VOC generation prompt for a given product domain.
+    Shared between voc_generator_node and the /generate-voc-only API endpoint.
     """
-    llm = get_llm()
-
-    prompt = f"""You are a product discovery specialist. Generate a realistic 
-Voice of Customer (VOC) input for a {state['product_domain']} product.
+    return f"""You are a product discovery specialist. Generate a realistic \
+Voice of Customer (VOC) input for a {product_domain} product.
 
 Include:
 - 2-3 different user personas with distinct needs and roles
@@ -113,7 +112,25 @@ Include:
 Do NOT write requirements or user stories. Write raw customer voice only.
 Output plain text, no headers or formatting."""
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+
+def _strip_json_fences(text: str) -> str:
+    """Remove markdown code fences from LLM responses."""
+    return text.replace("```json", "").replace("```", "").strip()
+
+
+# ─────────────────────────────────────────────
+# 4. AGENT NODES
+# ─────────────────────────────────────────────
+
+def voc_generator_node(state: RequirementsState) -> RequirementsState:
+    """
+    Generates a realistic VOC if the user didn't provide one.
+    Only runs when generate_voc = True.
+    """
+    log.info("[VOC Generator] Starting VOC generation for domain: '%s'", state["product_domain"])
+    t0 = time.time()
+
+    response = get_llm().invoke([HumanMessage(content=build_voc_prompt(state["product_domain"]))])
 
     log.info("[VOC Generator] Done in %.1fs", time.time() - t0)
     return {**state, "voc_input": response.content}
