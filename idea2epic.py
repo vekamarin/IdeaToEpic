@@ -59,16 +59,30 @@ class RequirementsState(TypedDict):
 
 
 # ─────────────────────────────────────────────
-# 2. LLM SETUP
+# 2. LLM SETUP — singleton, instantiated once
 # ─────────────────────────────────────────────
 
-def get_llm():
-    """Initialize Gemini. Set GOOGLE_API_KEY in your .env file."""
+MAX_ITERATIONS = 3  # 1 initial attempt + 2 revision cycles
+
+def _create_llm() -> ChatGoogleGenerativeAI:
+    """Create the shared LLM instance. Called once at module load."""
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise EnvironmentError("GOOGLE_API_KEY not found. Check your .env file.")
     return ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",   # free tier model
-        google_api_key=os.getenv("GOOGLE_API_KEY"),
+        model="gemini-2.5-flash",
+        google_api_key=api_key,
         temperature=0.3
     )
+
+_llm: Optional[ChatGoogleGenerativeAI] = None
+
+def get_llm() -> ChatGoogleGenerativeAI:
+    """Return the module-level singleton LLM instance."""
+    global _llm
+    if _llm is None:
+        _llm = _create_llm()
+    return _llm
 
 
 # ─────────────────────────────────────────────
@@ -132,7 +146,7 @@ Example format:
   }}
 ]"""
 
-    response = llm.invoke([HumanMessage(content=prompt)])
+    response = get_llm().invoke([HumanMessage(content=prompt)])
 
     try:
         needs = json.loads(_strip_json_fences(response.content))
@@ -197,14 +211,11 @@ Rules:
 - 3-5 Epics
 - 2-4 Features per Epic
 - 2-3 User Stories per Feature
-- Every ID must create a clear traceability chain
+- Every ID must create a clear traceability chain (US references F, F references E)
+- Acceptance criteria must be measurable and testable — no vague language
 - Return ONLY valid JSON, no markdown, no explanation"""
 
-    response = llm.invoke([HumanMessage(content=prompt)])
-    raw = response.content
-    # Strip markdown code blocks if present
-    raw = raw.replace("```json", "").replace("```", "").strip()
-    hierarchy = json.loads(raw)
+    response = get_llm().invoke([HumanMessage(content=prompt)])
 
     try:
         hierarchy = json.loads(_strip_json_fences(response.content))

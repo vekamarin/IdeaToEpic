@@ -1,27 +1,27 @@
 """
-FastAPI wrapper for the Requirements Generation Pipeline.
+FastAPI wrapper for the IdeaToEpic Requirements Generation Pipeline.
 Run locally with: uvicorn api:app --reload
 """
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List
 import uvicorn
 
-from idea2epic import run_pipeline
+from idea2epic import run_pipeline, get_llm, build_voc_prompt
+from langchain_core.messages import HumanMessage
 
 # ─────────────────────────────────────────────
 # 1. APP SETUP
 # ─────────────────────────────────────────────
 
 app = FastAPI(
-    title="Requirements Generator API",
+    title="IdeaToEpic — Requirements Generator API",
     description="Transforms VOC input into structured product backlogs using AI agents.",
-    version="1.0.0"
+    version="2.0.0"
 )
 
-# Allow Lovable / any frontend to call this API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],       # tighten this in production
@@ -75,13 +75,10 @@ def health_check():
 @app.post("/generate", response_model=GenerateResponse)
 def generate_requirements(request: GenerateRequest):
     """
-    Main endpoint. Accepts VOC input or auto-generates one.
-    Runs the full LangGraph multi-agent pipeline and returns
-    a structured backlog with epics, features, and user stories.
+    Main endpoint. Runs the full LangGraph multi-agent pipeline.
+    Returns a structured backlog: epics → features → user stories.
     """
-
-    # Validate: must have either voc_input or generate_voc=True
-    if not request.generate_voc and not request.voc_input.strip():
+    if not request.generate_voc and not (request.voc_input or "").strip():
         raise HTTPException(
             status_code=400,
             detail="Provide either voc_input text or set generate_voc to True."
@@ -90,35 +87,24 @@ def generate_requirements(request: GenerateRequest):
     try:
         result = run_pipeline(
             product_domain=request.product_domain,
-            voc_input=request.voc_input,
+            voc_input=request.voc_input or "",
             generate_voc=request.generate_voc
         )
         return result
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Pipeline error: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
 
 
 @app.post("/generate-voc-only")
-def generate_voc_only(product_domain: str):
+def generate_voc_only(request: VocOnlyRequest):
     """
     Utility endpoint — generates only the VOC text for preview
-    before running the full pipeline. Useful for the UI toggle flow.
+    before committing to the full pipeline. Uses the same prompt
+    as the internal voc_generator_node (single source of truth).
     """
-    from idea2epic import get_llm
-    from langchain_core.messages import HumanMessage
-
-    llm = get_llm()
-
-    prompt = f"""Generate a realistic Voice of Customer (VOC) input for a {product_domain} product.
-Include 2-3 personas, their pain points, and desired outcomes.
-Write in natural conversational language. No headers or formatting."""
-
     try:
-        response = llm.invoke([HumanMessage(content=prompt)])
+        prompt = build_voc_prompt(request.product_domain)
+        response = get_llm().invoke([HumanMessage(content=prompt)])
         return {"voc_text": response.content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
