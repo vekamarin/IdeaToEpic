@@ -9,7 +9,7 @@ import time
 import logging
 from typing import TypedDict, Literal, Optional
 from langgraph.graph import StateGraph, END
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
 from dotenv import load_dotenv
 
@@ -68,20 +68,20 @@ class RequirementsState(TypedDict):
 
 MAX_ITERATIONS = 3  # 1 initial attempt + 2 revision cycles
 
-def _create_llm() -> ChatGoogleGenerativeAI:
+def _create_llm() -> ChatGroq:
     """Create the shared LLM instance. Called once at module load."""
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
         raise EnvironmentError("GOOGLE_API_KEY not found. Check your .env file.")
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        google_api_key=api_key,
+    return ChatGroq(
+        model="llama-3.3-70b-versatile",  # free, very capable
+        api_key=os.getenv("GROQ_API_KEY"),
         temperature=0.3
     )
 
-_llm: Optional[ChatGoogleGenerativeAI] = None
+_llm: Optional[ChatGroq] = None
 
-def get_llm() -> ChatGoogleGenerativeAI:
+def get_llm() -> ChatGroq:
     """Return the module-level singleton LLM instance."""
     global _llm
     if _llm is None:
