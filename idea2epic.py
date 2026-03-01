@@ -54,8 +54,12 @@ class RequirementsState(TypedDict):
 
     # Quality control
     quality_feedback: str
+    quality_score: Optional[int]  # 1-10 score from auditor
+    quality_issues: list          # list of identified issues
     approved: bool
-    iteration: int                # safety counter to avoid infinite loops
+    # iteration counts completed quality checks (starts at 0).
+    # Pipeline allows up to MAX_ITERATIONS checks before forcing exit.
+    iteration: int
 
 
 # ─────────────────────────────────────────────
@@ -161,13 +165,18 @@ Example format:
 def requirement_architect_node(state: RequirementsState) -> RequirementsState:
     """
     Builds the Epic → Feature → User Story hierarchy with full traceability.
-    This is the core of the pipeline.
+    On revision cycles, quality_feedback is injected into the prompt.
     """
     iteration = state.get("iteration", 0)
     log.info("[Requirement Architect] Building backlog (attempt %d/%d)", iteration + 1, MAX_ITERATIONS)
     t0 = time.time()
 
     needs_text = json.dumps(state["stakeholder_needs"], indent=2)
+    feedback_section = (
+        f"Quality feedback to address:\n{state['quality_feedback']}"
+        if state.get("quality_feedback")
+        else "No prior feedback — this is the first attempt."
+    )
 
     prompt = f"""You are a senior systems engineer specializing in requirements architecture.
 
@@ -176,7 +185,7 @@ Given these stakeholder needs, generate a fully traceable product backlog hierar
 STAKEHOLDER NEEDS:
 {needs_text}
 
-Quality feedback to address (if any): {state.get('quality_feedback', 'None')}
+{feedback_section}
 
 Generate the following structure as valid JSON:
 {{
@@ -224,9 +233,8 @@ Rules:
         log.warning("[Requirement Architect] JSON parse failed — storing raw response")
         epics = [{"raw": response.content}]
 
-    # Flatten features and stories for easy access
-    features = []
-    user_stories = []
+    # Flatten features and stories for easy downstream access
+    features, user_stories = [], []
     for epic in epics:
         for feature in epic.get("features", []):
             features.append(feature)
@@ -243,7 +251,7 @@ Rules:
 def quality_checker_node(state: RequirementsState) -> RequirementsState:
     """
     Reviews the full backlog for quality, gaps, and traceability.
-    Returns APPROVED or REJECTED with specific feedback.
+    JSON parse failure → REJECTED (safe default — never silently approve broken output).
     """
     log.info("[Quality Checker] Running quality audit (check #%d)", state.get("iteration", 0) + 1)
     t0 = time.time()
@@ -275,12 +283,12 @@ Check for:
 Return JSON:
 {{
   "status": "APPROVED" or "REJECTED",
-  "score": 1-10,
+  "score": <integer 1-10>,
   "issues": ["issue 1", "issue 2"],
-  "feedback": "Specific instructions for improvement if REJECTED"
+  "feedback": "Specific, actionable instructions for the architect to fix if REJECTED. Empty string if APPROVED."
 }}
 
-Return ONLY valid JSON."""
+Return ONLY valid JSON, no markdown."""
 
     response = get_llm().invoke([HumanMessage(content=prompt)])
     new_iteration = state.get("iteration", 0) + 1
@@ -309,12 +317,14 @@ Return ONLY valid JSON."""
         **state,
         "approved": approved,
         "quality_feedback": feedback,
-        "iteration": state.get("iteration", 0) + 1
+        "quality_score": score,
+        "quality_issues": issues,
+        "iteration": new_iteration,
     }
 
 
 # ─────────────────────────────────────────────
-# 4. ROUTING LOGIC
+# 5. ROUTING LOGIC
 # ─────────────────────────────────────────────
 
 def should_generate_voc(state: RequirementsState) -> Literal["voc_generator", "voc_analyst"]:
@@ -325,27 +335,33 @@ def should_generate_voc(state: RequirementsState) -> Literal["voc_generator", "v
 
 
 def quality_gate(state: RequirementsState) -> Literal["requirement_architect", "end"]:
-    """Loop back to architect if quality fails. Max 2 retries."""
-    if state.get("approved", False) or state.get("iteration", 0) >= 2:
+    """
+    Loop back to architect if quality fails.
+    Exits when: approved=True OR iteration >= MAX_ITERATIONS.
+    MAX_ITERATIONS = 3 means: 1 original + 2 revision cycles.
+    """
+    if state.get("approved", False):
+        log.info("[Quality Gate] APPROVED — pipeline complete")
+        return "end"
+    if state.get("iteration", 0) >= MAX_ITERATIONS:
+        log.warning("[Quality Gate] Max iterations (%d) reached — exiting without approval", MAX_ITERATIONS)
         return "end"
     log.info("[Quality Gate] REJECTED — sending back to architect for revision")
     return "requirement_architect"
 
 
 # ─────────────────────────────────────────────
-# 5. BUILD THE GRAPH
+# 6. BUILD THE GRAPH
 # ─────────────────────────────────────────────
 
 def build_pipeline() -> StateGraph:
     graph = StateGraph(RequirementsState)
 
-    # Add nodes
     graph.add_node("voc_generator", voc_generator_node)
     graph.add_node("voc_analyst", voc_analyst_node)
     graph.add_node("requirement_architect", requirement_architect_node)
     graph.add_node("quality_checker", quality_checker_node)
 
-    # Entry point with conditional routing
     graph.set_conditional_entry_point(
         should_generate_voc,
         {
@@ -354,12 +370,10 @@ def build_pipeline() -> StateGraph:
         }
     )
 
-    # Linear flow
     graph.add_edge("voc_generator", "voc_analyst")
     graph.add_edge("voc_analyst", "requirement_architect")
     graph.add_edge("requirement_architect", "quality_checker")
 
-    # Quality gate — loop or end
     graph.add_conditional_edges(
         "quality_checker",
         quality_gate,
@@ -400,6 +414,8 @@ def run_pipeline(
         "features": [],
         "user_stories": [],
         "quality_feedback": "",
+        "quality_score": None,
+        "quality_issues": [],
         "approved": False,
         "iteration": 0
     }
@@ -419,16 +435,17 @@ def run_pipeline(
         "features": final_state["features"],
         "user_stories": final_state["user_stories"],
         "quality_approved": final_state["approved"],
+        "quality_score": final_state.get("quality_score"),
+        "quality_issues": final_state.get("quality_issues", []),
         "iterations": final_state["iteration"]
     }
 
 
 # ─────────────────────────────────────────────
-# 7. LOCAL TEST
+# 8. LOCAL TEST
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Test with auto-generated VOC
     result = run_pipeline(
         product_domain="hospital patient scheduling system",
         generate_voc=True
