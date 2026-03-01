@@ -404,7 +404,7 @@ def build_pipeline() -> StateGraph:
 
 
 # ─────────────────────────────────────────────
-# 6. PUBLIC RUNNER FUNCTION (used by FastAPI)
+# 7. PUBLIC RUNNER (used by FastAPI and Streamlit)
 # ─────────────────────────────────────────────
 
 def run_pipeline(
