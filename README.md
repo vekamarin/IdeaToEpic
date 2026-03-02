@@ -4,7 +4,14 @@
 
 IdeaToEpic is a LangGraph-powered system that takes Voice of Customer (VOC) input — either written by you or auto-generated — and produces a fully traceable product backlog with Epics, Features, and User Stories, complete with acceptance criteria and a quality gate.
 
----
+--- 
+
+## Live demo UI
+
+A deployed Lovable frontend is available: https://ideatoepic.lovable.app  
+Use it to try the pipeline interactively without running the project locally.
+
+--- 
 
 ## Why I Built This
 
