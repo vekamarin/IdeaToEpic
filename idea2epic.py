@@ -70,9 +70,9 @@ MAX_ITERATIONS = 3  # 1 initial attempt + 2 revision cycles
 
 def _create_llm() -> ChatGroq:
     """Create the shared LLM instance. Called once at module load."""
-    api_key = os.getenv("GOOGLE_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        raise EnvironmentError("GOOGLE_API_KEY not found. Check your .env file.")
+        raise EnvironmentError("API_KEY not found. Check your .env file.")
     return ChatGroq(
         model="llama-3.3-70b-versatile",  # free, very capable
         api_key=os.getenv("GROQ_API_KEY"),
