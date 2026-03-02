@@ -86,7 +86,7 @@ Acceptance Criteria:
 | Layer | Technology |
 |---|---|
 | Agent Orchestration | LangGraph |
-| LLM | Google Gemini 2.5 Flash (swappable) |
+| LLM | Groq (Llama 3.3) (swapabble) |
 | API | FastAPI |
 | Frontend | Lovable (production UI) / Streamlit (dev interface) |
 | Tracing | LangSmith |
