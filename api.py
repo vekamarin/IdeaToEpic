@@ -5,10 +5,13 @@ Run locally with: uvicorn api:app --reload
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List
+import json
+import asyncio
 
-from idea2epic import run_pipeline, llm, build_voc_prompt
+from idea2epic import run_pipeline, llm, build_voc_prompt, build_streaming_pipeline
 from langchain_core.messages import HumanMessage
 
 # ─────────────────────────────────────────────
@@ -116,6 +119,100 @@ def generate_voc_only(request: VocOnlyRequest):
         return {"voc_text": response.content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate-stream")
+async def generate_requirements_stream(request: GenerateRequest):
+    """
+    Streaming endpoint. Emits Server-Sent Events (SSE) as the pipeline progresses.
+    
+    Event format:
+    - event: node_complete
+    - data: JSON with node name, current state metrics, iteration count
+    
+    Frontend can consume with EventSource or fetch API.
+    """
+    if not request.generate_voc and not (request.voc_input or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either voc_input text or set generate_voc to True."
+        )
+
+    async def event_generator():
+        try:
+            pipeline = build_streaming_pipeline()
+            
+            initial_state = {
+                "product_domain": request.product_domain,
+                "generate_voc": request.generate_voc,
+                "voc_input": request.voc_input or "",
+                "stakeholder_needs": [],
+                "epics": [],
+                "features": [],
+                "user_stories": [],
+                "quality_feedback": "",
+                "quality_score": None,
+                "quality_issues": [],
+                "approved": False,
+                "iteration": 0
+            }
+            
+            last_node = None
+            
+            # Stream state updates as each node completes
+            async for state_update in pipeline.astream(initial_state):
+                # state_update is a dict like {"node_name": updated_state}
+                for node_name, current_state in state_update.items():
+                    if node_name == last_node:
+                        continue  # Skip duplicate emissions
+                    
+                    last_node = node_name
+                    
+                    # Build status update
+                    status = {
+                        "node": node_name,
+                        "needs_count": len(current_state.get("stakeholder_needs", [])),
+                        "epics_count": len(current_state.get("epics", [])),
+                        "features_count": len(current_state.get("features", [])),
+                        "stories_count": len(current_state.get("user_stories", [])),
+                        "iteration": current_state.get("iteration", 0),
+                        "approved": current_state.get("approved", False),
+                        "quality_score": current_state.get("quality_score")
+                    }
+                    
+                    yield f"event: node_complete\n"
+                    yield f"data: {json.dumps(status)}\n\n"
+                    await asyncio.sleep(0.01)  # Small delay to ensure events are sent
+            
+            # Send final complete state
+            final_result = {
+                "voc_used": current_state["voc_input"],
+                "stakeholder_needs": current_state["stakeholder_needs"],
+                "epics": current_state["epics"],
+                "features": current_state["features"],
+                "user_stories": current_state["user_stories"],
+                "quality_approved": current_state["approved"],
+                "quality_score": current_state.get("quality_score"),
+                "quality_issues": current_state.get("quality_issues", []),
+                "iterations": current_state["iteration"]
+            }
+            
+            yield f"event: final_result\n"
+            yield f"data: {json.dumps(final_result)}\n\n"
+            
+        except Exception as e:
+            yield f"event: error\n"
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
 
 
 # ─────────────────────────────────────────────

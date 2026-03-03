@@ -371,6 +371,10 @@ def build_pipeline() -> StateGraph:
     return graph.compile()
 
 
+# Alias for streaming - same graph, just used with astream() instead of invoke()
+build_streaming_pipeline = build_pipeline
+
+
 # ─────────────────────────────────────────────
 # 6. PUBLIC RUNNER (used by FastAPI and Streamlit)
 # ─────────────────────────────────────────────
