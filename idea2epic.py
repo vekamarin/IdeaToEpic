@@ -50,6 +50,10 @@ llm = ChatGroq(
     temperature=0.3
 )
 
+# Utility function to clean JSON output from LLM
+def clean_json(text: str) -> str:
+    """Remove markdown code fences from LLM responses."""
+    return text.replace("```json", "").replace("```", "").strip()
 
 # State definition
 class RequirementsState(TypedDict):
@@ -90,11 +94,6 @@ Include:
 
 Do NOT write requirements or user stories. Write raw customer voice only.
 Output plain text, no headers or formatting."""
-
-
-def clean_json(text: str) -> str:
-    """Remove markdown code fences from LLM responses."""
-    return text.replace("```json", "").replace("```", "").strip()
 
 
 # ─────────────────────────────────────────────
