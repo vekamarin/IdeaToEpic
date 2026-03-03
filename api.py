@@ -112,7 +112,7 @@ def generate_voc_only(request: VocOnlyRequest):
     """
     try:
         prompt = build_voc_prompt(request.product_domain)
-        response = get_llm().invoke([HumanMessage(content=prompt)])
+        response = llm.invoke([HumanMessage(content=prompt)])
         return {"voc_text": response.content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

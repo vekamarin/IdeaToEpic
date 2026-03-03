@@ -86,7 +86,7 @@ if generate_voc and product_domain:
             with st.spinner("Generating VOC..."):
                 try:
                     prompt = build_voc_prompt(product_domain)
-                    response = get_llm().invoke([HumanMessage(content=prompt)])
+                    response = llm.invoke([HumanMessage(content=prompt)])
                     st.session_state["voc_preview"] = response.content
                 except Exception as e:
                     st.error(f"Error: {e}")

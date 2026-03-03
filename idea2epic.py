@@ -109,7 +109,7 @@ def voc_generator_node(state: RequirementsState) -> RequirementsState:
     log.info("[VOC Generator] Starting VOC generation for domain: '%s'", state["product_domain"])
     t0 = time.time()
 
-    response = get_llm().invoke([HumanMessage(content=build_voc_prompt(state["product_domain"]))])
+    response = llm.invoke([HumanMessage(content=build_voc_prompt(state["product_domain"]))])
 
     log.info("[VOC Generator] Done in %.1fs", time.time() - t0)
     return {**state, "voc_input": response.content}
