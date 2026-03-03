@@ -1,6 +1,6 @@
 """
-IdeaToEpic
-Multi-agent LangGraph system that transforms VOC input into structured product backlogs.
+IdeaToEpic - Multi-agent requirements generation pipeline
+Transforms VOC input into structured product backlogs using LangGraph
 """
 
 import os
@@ -37,9 +37,21 @@ log = logging.getLogger("idea2epic")
 
 
 # ─────────────────────────────────────────────
-# 1. SHARED STATE
+# 1. SETUP
 # ─────────────────────────────────────────────
 
+# Config 
+MAX_ITERATIONS = 3 # 1 initial attempt + 2 revision cycles
+
+# LLM setup - replace with your preferred model
+llm = ChatGroq(
+    model="llama-3.3-70b-versatile",
+    api_key=os.getenv("GROQ_API_KEY"),
+    temperature=0.3
+)
+
+
+# State definition
 class RequirementsState(TypedDict):
     # Input
     product_domain: str           # e.g. "hospital scheduling app"
@@ -61,44 +73,11 @@ class RequirementsState(TypedDict):
     # Pipeline allows up to MAX_ITERATIONS checks before forcing exit.
     iteration: int
 
-
 # ─────────────────────────────────────────────
-# 2. LLM SETUP — singleton, instantiated once
+# 2. SHARED PROMPT BUILDER
 # ─────────────────────────────────────────────
-
-MAX_ITERATIONS = 3  # 1 initial attempt + 2 revision cycles
-
-def _create_llm() -> ChatGroq:
-    """Create the shared LLM instance. Called once at module load."""
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise EnvironmentError("API_KEY not found. Check your .env file.")
-    return ChatGroq(
-        model="llama-3.3-70b-versatile",  # free, very capable
-        api_key=os.getenv("GROQ_API_KEY"),
-        temperature=0.3
-    )
-
-_llm: Optional[ChatGroq] = None
-
-def get_llm() -> ChatGroq:
-    """Return the module-level singleton LLM instance."""
-    global _llm
-    if _llm is None:
-        _llm = _create_llm()
-    return _llm
-
-
-# ─────────────────────────────────────────────
-# 3. SHARED PROMPT BUILDER
-# Centralised here so api.py can import it — single source of truth.
-# ─────────────────────────────────────────────
-
 def build_voc_prompt(product_domain: str) -> str:
-    """
-    Returns the VOC generation prompt for a given product domain.
-    Shared between voc_generator_node and the /generate-voc-only API endpoint.
-    """
+    """Generate VOC creation prompt"""
     return f"""You are a product discovery specialist. Generate a realistic \
 Voice of Customer (VOC) input for a {product_domain} product.
 
@@ -113,13 +92,13 @@ Do NOT write requirements or user stories. Write raw customer voice only.
 Output plain text, no headers or formatting."""
 
 
-def _strip_json_fences(text: str) -> str:
+def clean_json(text: str) -> str:
     """Remove markdown code fences from LLM responses."""
     return text.replace("```json", "").replace("```", "").strip()
 
 
 # ─────────────────────────────────────────────
-# 4. AGENT NODES
+# 3. AGENT NODES
 # ─────────────────────────────────────────────
 
 def voc_generator_node(state: RequirementsState) -> RequirementsState:
@@ -167,10 +146,10 @@ Example format:
   }}
 ]"""
 
-    response = get_llm().invoke([HumanMessage(content=prompt)])
+    response = llm.invoke([HumanMessage(content=prompt)])
 
     try:
-        needs = json.loads(_strip_json_fences(response.content))
+        needs = json.loads(clean_json(response.content))
         log.info("[VOC Analyst] Extracted %d stakeholder needs in %.1fs", len(needs), time.time() - t0)
     except json.JSONDecodeError:
         log.warning("[VOC Analyst] JSON parse failed — wrapping raw response as fallback")
@@ -241,28 +220,24 @@ Rules:
 - Acceptance criteria must be measurable and testable — no vague language
 - Return ONLY valid JSON, no markdown, no explanation"""
 
-    response = get_llm().invoke([HumanMessage(content=prompt)])
+    response = llm.invoke([HumanMessage(content=prompt)])
 
     try:
-        hierarchy = json.loads(_strip_json_fences(response.content))
+        hierarchy = json.loads(clean_json(response.content))
         epics = hierarchy.get("epics", [])
     except json.JSONDecodeError:
         log.warning("[Requirement Architect] JSON parse failed — storing raw response")
         epics = [{"raw": response.content}]
 
-    # Flatten features and stories for easy downstream access
-    features, user_stories = [], []
-    for epic in epics:
-        for feature in epic.get("features", []):
-            features.append(feature)
-            for story in feature.get("user_stories", []):
-                user_stories.append(story)
-
+    # Flatten for easy access
+    features = [f for e in epics for f in e.get("features", [])]
+    stories = [s for f in features for s in f.get("user_stories", [])]
+    
     log.info(
         "[Requirement Architect] Built %d epics, %d features, %d stories in %.1fs",
-        len(epics), len(features), len(user_stories), time.time() - t0
+        len(epics), len(features), len(stories), time.time() - t0
     )
-    return {**state, "epics": epics, "features": features, "user_stories": user_stories}
+    return {**state, "epics": epics, "features": features, "user_stories": stories}
 
 
 def quality_checker_node(state: RequirementsState) -> RequirementsState:
@@ -307,11 +282,11 @@ Return JSON:
 
 Return ONLY valid JSON, no markdown."""
 
-    response = get_llm().invoke([HumanMessage(content=prompt)])
+    response = llm.invoke([HumanMessage(content=prompt)])
     new_iteration = state.get("iteration", 0) + 1
 
     try:
-        result = json.loads(_strip_json_fences(response.content))
+        result = json.loads(clean_json(response.content))
         approved = result.get("status") == "APPROVED"
         feedback = result.get("feedback", "")
         score = result.get("score")
@@ -341,7 +316,7 @@ Return ONLY valid JSON, no markdown."""
 
 
 # ─────────────────────────────────────────────
-# 5. ROUTING LOGIC
+# 4. ROUTING LOGIC
 # ─────────────────────────────────────────────
 
 def should_generate_voc(state: RequirementsState) -> Literal["voc_generator", "voc_analyst"]:
@@ -368,7 +343,7 @@ def quality_gate(state: RequirementsState) -> Literal["requirement_architect", "
 
 
 # ─────────────────────────────────────────────
-# 6. BUILD THE GRAPH
+# 5. BUILD THE GRAPH
 # ─────────────────────────────────────────────
 
 def build_pipeline() -> StateGraph:
@@ -381,10 +356,7 @@ def build_pipeline() -> StateGraph:
 
     graph.set_conditional_entry_point(
         should_generate_voc,
-        {
-            "voc_generator": "voc_generator",
-            "voc_analyst": "voc_analyst"
-        }
+        {"voc_generator": "voc_generator", "voc_analyst": "voc_analyst"}
     )
 
     graph.add_edge("voc_generator", "voc_analyst")
@@ -394,24 +366,17 @@ def build_pipeline() -> StateGraph:
     graph.add_conditional_edges(
         "quality_checker",
         quality_gate,
-        {
-            "requirement_architect": "requirement_architect",
-            "end": END
-        }
+        {"requirement_architect": "requirement_architect", "end": END}
     )
 
     return graph.compile()
 
 
 # ─────────────────────────────────────────────
-# 7. PUBLIC RUNNER (used by FastAPI and Streamlit)
+# 6. PUBLIC RUNNER (used by FastAPI and Streamlit)
 # ─────────────────────────────────────────────
 
-def run_pipeline(
-    product_domain: str,
-    voc_input: str = "",
-    generate_voc: bool = False
-) -> dict:
+def run_pipeline(product_domain: str, voc_input: str = "", generate_voc: bool = False) -> dict:
     """
     Main entry point. Called by FastAPI.
     Returns the final state with all generated artifacts.
@@ -459,7 +424,7 @@ def run_pipeline(
 
 
 # ─────────────────────────────────────────────
-# 8. LOCAL TEST
+# 7. LOCAL TEST
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":

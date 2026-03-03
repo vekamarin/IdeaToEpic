@@ -7,9 +7,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List
-import uvicorn
 
-from idea2epic import run_pipeline, get_llm, build_voc_prompt
+from idea2epic import run_pipeline, llm, build_voc_prompt
 from langchain_core.messages import HumanMessage
 
 # ─────────────────────────────────────────────
@@ -124,4 +123,5 @@ def generate_voc_only(request: VocOnlyRequest):
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)

@@ -6,7 +6,7 @@ Run with: streamlit run app.py
 import json
 import time
 import streamlit as st
-from idea2epic import run_pipeline, get_llm, build_voc_prompt
+from idea2epic import run_pipeline, llm, build_voc_prompt
 from langchain_core.messages import HumanMessage
 
 # ─────────────────────────────────────────────
@@ -37,7 +37,7 @@ with st.sidebar:
 4. **Quality Gate** — loops back if rejected (max 3 attempts)
 """)
     st.divider()
-    st.caption("Powered by LangGraph + Gemini 2.5 Flash")
+    st.caption("Powered by LangGraph + Groq")
 
 
 # ─────────────────────────────────────────────
