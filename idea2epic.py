@@ -76,6 +76,7 @@ class RequirementsState(TypedDict):
     # iteration counts completed quality checks (starts at 0).
     # Pipeline allows up to MAX_ITERATIONS checks before forcing exit.
     iteration: int
+    iteration_history: list  # Track each iteration's score and issues
 
 # ─────────────────────────────────────────────
 # 2. SHARED PROMPT BUILDER
@@ -340,6 +341,16 @@ Return ONLY valid JSON, no markdown."""
 
     log.info("[Quality Checker] Done in %.1fs", time.time() - t0)
 
+    history_entry = {
+        "iteration": new_iteration,
+        "score": score,
+        "status": result.get("status"),
+        "issues": issues,
+        "timestamp": time.time()
+    }
+    current_history = state.get("iteration_history", [])
+    current_history.append(history_entry)
+
     return {
         **state,
         "approved": approved,
@@ -347,6 +358,7 @@ Return ONLY valid JSON, no markdown."""
         "quality_score": score,
         "quality_issues": issues,
         "iteration": new_iteration,
+        "iteration_history": current_history
     }
 
 
@@ -458,7 +470,8 @@ def run_pipeline(product_domain: str, voc_input: str = "", generate_voc: bool = 
         "quality_approved": final_state["approved"],
         "quality_score": final_state.get("quality_score"),
         "quality_issues": final_state.get("quality_issues", []),
-        "iterations": final_state["iteration"]
+        "iterations": final_state["iteration"],
+        "iteration_history": final_state.get("iteration_history", [])
     }
 
 
