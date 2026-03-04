@@ -41,7 +41,7 @@ log = logging.getLogger("idea2epic")
 # ─────────────────────────────────────────────
 
 # Config 
-MAX_ITERATIONS = 3 # 1 initial attempt + 2 revision cycles
+MAX_ITERATIONS = 5 # 1 initial attempt + 4 revision cycles if not stuck in score
 
 # LLM setup - replace with your preferred model
 llm = ChatGroq(
@@ -193,14 +193,28 @@ HOW TO REVISE (READ CAREFULLY):
 ════════════════════════════════════════════════════════════════
 
 For COVERAGE GAP issues:
-→ Identify the exact persona + pain point mentioned
-→ ADD a NEW user story that DIRECTLY addresses it
-→ Use clear Given/When/Then acceptance criteria
-→ Example: If issue says "Front desk scheduler feeling like human shield not addressed"
-   ADD: "As a Front Desk Scheduler, I want an AI-suggested resolution tool 
-   when conflicts arise so that I can help patients instead of just managing chaos.
-   AC: Given a scheduling conflict, When I open the appointment, Then system 
-   suggests 3 alternative solutions within 2 seconds."
+→ Read the exact persona + pain point mentioned
+→ ADD a NEW user story with a SPECIFIC user action
+→ DO NOT try to address emotional/cultural issues with software
+
+EXAMPLE OF WHAT TO DO:
+Quality checker says: "No story for scheduler to view daily appointment metrics"
+You ADD:
+{
+  "id": "US3.2.3",
+  "feature_id": "F3.2",
+  "story": "As a Central Scheduler, I want to view daily appointment booking metrics on my dashboard so that I can identify peak call times",
+  "acceptance_criteria": [
+    "Given I open my dashboard, When the page loads, Then I see total appointments booked, cancelled, and rescheduled for today",
+    "Given I view the metrics, When I hover over the data, Then I see an hourly breakdown of booking activity"
+  ]
+}
+
+EXAMPLE OF WHAT NOT TO DO:
+Quality checker says: "Patient feels like a burden"
+You ADD: "As a Patient, I want to not feel like a burden..." ← THIS IS WRONG
+Instead, skip emotional issues or translate them to functional actions:
+"As a Patient, I want to book appointments online without calling..."
 
 For CLARITY/TESTABILITY issues:
 → Find the EXACT story ID mentioned (e.g., "US1.2.3")
@@ -350,9 +364,23 @@ GENERATED BACKLOG:
 Audit criteria:
 1. Traceability: Every story ID must reference a valid feature ID, every feature ID must reference an epic ID
 2. Testability: Acceptance criteria must use Given/When/Then with measurable outcomes (numbers, timeframes, states)
-3. Coverage: Every stakeholder persona and pain point must be addressed by at least one user story
+3. Coverage: Every stakeholder persona and FUNCTIONAL pain point must be addressed by at least one user story
+   - Focus on WHAT the user can DO differently, not emotional outcomes
+   - Example: "Can't see schedule" needs a story for viewing schedules (good)
+   - Example: "Feels like a burden" is too abstract - skip these (bad)
 4. Clarity: User stories must follow "As a [specific role], I want [specific action] so that [specific benefit]"
 5. Completeness: No placeholder text like "TBD", "etc", or vague outcomes
+
+CRITICAL: Focus ONLY on functional gaps that can be solved with features.
+Do NOT flag emotional/cultural/organizational issues that cannot be addressed by software alone.
+
+Examples of GOOD coverage issues:
+✅ "No story allows patient to view family appointments"
+✅ "No story validates referral form completeness"
+
+Examples of BAD coverage issues (skip these):
+❌ "Patient feels like a burden" (emotional state, not a functional gap)
+❌ "Scheduler overwhelmed by workload" (organizational problem, not software gap)
 
 Scoring guide:
 - 9-10: Production-ready, all personas covered, all acceptance criteria measurable
