@@ -200,7 +200,7 @@ For COVERAGE GAP issues:
 EXAMPLE OF WHAT TO DO:
 Quality checker says: "No story for scheduler to view daily appointment metrics"
 You ADD:
-{
+{{
   "id": "US3.2.3",
   "feature_id": "F3.2",
   "story": "As a Central Scheduler, I want to view daily appointment booking metrics on my dashboard so that I can identify peak call times",
@@ -208,7 +208,7 @@ You ADD:
     "Given I open my dashboard, When the page loads, Then I see total appointments booked, cancelled, and rescheduled for today",
     "Given I view the metrics, When I hover over the data, Then I see an hourly breakdown of booking activity"
   ]
-}
+}}
 
 EXAMPLE OF WHAT NOT TO DO:
 Quality checker says: "Patient feels like a burden"
