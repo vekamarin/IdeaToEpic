@@ -170,22 +170,60 @@ def requirement_architect_node(state: RequirementsState) -> RequirementsState:
     needs_text = json.dumps(state["stakeholder_needs"], indent=2)
     
     # Show previous attempt if this is a revision
-    previous_attempt = ""
     if state.get("quality_feedback") and state.get("epics"):
+        issues_list = "\n".join([f"{i+1}. {issue}" for i, issue in enumerate(state.get("quality_issues", []))])
+        
         previous_attempt = f"""
-PREVIOUS ATTEMPT (Score: {state.get('quality_score', 'N/A')}/10):
+════════════════════════════════════════════════════════════════
+REVISION REQUIRED - Iteration {iteration} of {MAX_ITERATIONS}
+Previous Score: {state.get('quality_score', 'N/A')}/10 (Target: 9+)
+════════════════════════════════════════════════════════════════
+
+YOUR PREVIOUS BACKLOG:
 {json.dumps({"epics": state["epics"]}, indent=2)}
 
-QUALITY ISSUES FOUND:
-{json.dumps(state.get("quality_issues", []), indent=2)}
+CRITICAL ISSUES FOUND (YOU MUST FIX THESE):
+{issues_list}
 
-REQUIRED FIXES:
+DETAILED FIX INSTRUCTIONS:
 {state['quality_feedback']}
 
-INSTRUCTIONS: Fix ONLY the identified issues. Keep what was good. Do not regenerate from scratch.
+════════════════════════════════════════════════════════════════
+HOW TO REVISE (READ CAREFULLY):
+════════════════════════════════════════════════════════════════
+
+For COVERAGE GAP issues:
+→ Identify the exact persona + pain point mentioned
+→ ADD a NEW user story that DIRECTLY addresses it
+→ Use clear Given/When/Then acceptance criteria
+→ Example: If issue says "Front desk scheduler feeling like human shield not addressed"
+   ADD: "As a Front Desk Scheduler, I want an AI-suggested resolution tool 
+   when conflicts arise so that I can help patients instead of just managing chaos.
+   AC: Given a scheduling conflict, When I open the appointment, Then system 
+   suggests 3 alternative solutions within 2 seconds."
+
+For CLARITY/TESTABILITY issues:
+→ Find the EXACT story ID mentioned (e.g., "US1.2.3")
+→ REWRITE only that story's text or acceptance criteria
+→ Keep the same ID
+→ Don't touch other stories
+
+For PARTIAL ADDRESS issues:
+→ The story exists but doesn't fully solve the problem
+→ ENHANCE the existing story's acceptance criteria
+→ Add additional acceptance criteria that cover the missing aspect
+
+CRITICAL RULES:
+1. Do NOT regenerate everything from scratch
+2. Do NOT remove stories that weren't criticized
+3. Do NOT change story IDs unless adding new stories
+4. Keep all the GOOD work from your previous attempt
+5. Make TARGETED fixes to the specific issues mentioned
+
+Return the COMPLETE updated backlog as JSON.
 """
     else:
-        previous_attempt = "This is your first attempt. Generate a complete backlog."
+        previous_attempt = "This is your first attempt. Generate a complete, high-quality backlog."
 
     prompt = f"""You are a senior systems engineer specializing in requirements architecture.
 
@@ -215,7 +253,7 @@ Generate the following structure as valid JSON:
               "feature_id": "F1.1",
               "story": "As a [persona], I want [goal] so that [benefit]",
               "acceptance_criteria": [
-                "Given [context], When [action], Then [outcome]"
+                "Given [context], When [action], Then [outcome with measurable result]"
               ]
             }}
           ]
@@ -230,20 +268,20 @@ Rules:
 - 2-4 Features per Epic
 - 2-3 User Stories per Feature
 - Every ID must create a clear traceability chain (US references F, F references E)
-- Acceptance criteria must be measurable and testable - use Given/When/Then format
-- Each acceptance criterion must have a measurable outcome (numbers, time, specific state changes)
+- Acceptance criteria MUST be measurable - include numbers, timeframes, or specific states
 - Cover ALL stakeholder personas mentioned in the needs
+- Each acceptance criterion must have "Given/When/Then" format with measurable outcome
 - Return ONLY valid JSON, no markdown, no explanation
 
-BAD acceptance criteria examples:
-- "System should be fast" (not measurable)
-- "User interface is intuitive" (subjective)
-- "Notifications work properly" (vague)
+MEASURABILITY EXAMPLES:
+❌ BAD: "System is fast"
+✅ GOOD: "Page loads in under 2 seconds for 95% of requests"
 
-GOOD acceptance criteria examples:
-- "Given a schedule change, When saved, Then notification appears within 30 seconds"
-- "Given 100 concurrent users, When loading dashboard, Then page loads in under 2 seconds"
-- "Given invalid input, When submitted, Then error message displays with specific field highlighted"
+❌ BAD: "User interface is intuitive"  
+✅ GOOD: "New users complete first booking without help documentation in under 5 minutes"
+
+❌ BAD: "Notifications work properly"
+✅ GOOD: "Push notification appears on user's device within 30 seconds of schedule change"
 """
 
     response = llm.invoke([HumanMessage(content=prompt)])
@@ -269,7 +307,7 @@ GOOD acceptance criteria examples:
 def quality_checker_node(state: RequirementsState) -> RequirementsState:
     """
     Reviews the full backlog for quality, gaps, and traceability.
-    JSON parse failure → REJECTED (safe default — never silently approve broken output).
+    On revisions, FIRST checks if previous issues were fixed.
     """
     log.info("[Quality Checker] Running quality audit (check #%d)", state.get("iteration", 0) + 1)
     t0 = time.time()
@@ -280,10 +318,26 @@ def quality_checker_node(state: RequirementsState) -> RequirementsState:
         "stories_count": len(state["user_stories"]),
         "epics": state["epics"]
     }
+    
+    # Check if this is a revision
+    previous_issues = state.get("quality_issues", [])
+    revision_context = ""
+    if previous_issues:
+        revision_context = f"""
+════════════════════════════════════════════════════════════════
+THIS IS A REVISION - PREVIOUS ISSUES WERE:
+════════════════════════════════════════════════════════════════
+{json.dumps(previous_issues, indent=2)}
+
+CRITICAL: Before finding NEW issues, you MUST verify whether these previous issues were FIXED.
+If an issue was NOT fixed, include it again in your response with "STILL UNFIXED:" prefix.
+Only look for new issues AFTER confirming old ones are resolved.
+════════════════════════════════════════════════════════════════
+"""
 
     prompt = f"""You are a requirements quality auditor with 15+ years of experience.
 
-Review this product backlog against the original stakeholder needs and identify specific issues.
+Review this product backlog against the original stakeholder needs.
 
 ORIGINAL STAKEHOLDER NEEDS:
 {json.dumps(state['stakeholder_needs'], indent=2)}
@@ -291,29 +345,34 @@ ORIGINAL STAKEHOLDER NEEDS:
 GENERATED BACKLOG:
 {json.dumps(backlog_summary, indent=2)}
 
+{revision_context}
+
 Audit criteria:
 1. Traceability: Every story ID must reference a valid feature ID, every feature ID must reference an epic ID
-2. Testability: Acceptance criteria must use Given/When/Then or measurable conditions (no "should be user-friendly")
+2. Testability: Acceptance criteria must use Given/When/Then with measurable outcomes (numbers, timeframes, states)
 3. Coverage: Every stakeholder persona and pain point must be addressed by at least one user story
 4. Clarity: User stories must follow "As a [specific role], I want [specific action] so that [specific benefit]"
 5. Completeness: No placeholder text like "TBD", "etc", or vague outcomes
 
 Scoring guide:
-- 9-10: Production-ready, minimal fixes needed
-- 7-8: Good structure, but has vague acceptance criteria or minor traceability gaps
-- 5-6: Missing coverage for stakeholders OR multiple untestable stories
-- 3-4: Significant structural issues, poor traceability
-- 1-2: Unusable, major gaps
+- 9-10: Production-ready, all personas covered, all acceptance criteria measurable
+- 7-8: Good structure, minor gaps (1-2 personas with partial coverage OR 1-2 vague criteria)
+- 5-6: Significant gaps (missing personas OR multiple untestable stories)
+- 3-4: Major structural issues
+- 1-2: Unusable
 
-CRITICAL: Be specific in your feedback. Don't say "some stories are vague" - say "US1.2.1 has untestable criteria". 
-Don't say "improve traceability" - say "Feature F2.3 references non-existent Epic E5".
+CRITICAL INSTRUCTIONS:
+- Be SPECIFIC: Don't say "some stories are vague" - say "US1.2.1: acceptance criteria 'easy to use' is not measurable"
+- For coverage gaps, cite the exact persona and pain point from STAKEHOLDER NEEDS
+- Focus on the TOP 3-5 most critical issues only
+- If this is a revision, FIRST check if previous issues were fixed before finding new ones
 
 Return JSON:
 {{
   "status": "APPROVED" or "REJECTED",
   "score": <integer 1-10>,
-  "issues": ["US1.2.1: acceptance criteria 'easy to use' is not measurable", "Nurse persona pain point about real-time updates not covered by any story"],
-  "feedback": "Specific fixes with IDs. Example: 'Rewrite US1.2.1 acceptance criteria to be measurable. Add story for Nurse real-time notification need.'"
+  "issues": ["Specific issue with story ID and fix needed", ...],
+  "feedback": "Concise, actionable fixes with exact IDs and what to change"
 }}
 
 Return ONLY valid JSON, no markdown."""
@@ -326,16 +385,28 @@ Return ONLY valid JSON, no markdown."""
         approved = result.get("status") == "APPROVED"
         feedback = result.get("feedback", "")
         score = result.get("score")
-        issues = result.get("issues", [])
+        all_issues = result.get("issues", [])
+        
+        # PRIORITIZE: Coverage gaps, then testability, then clarity
+        coverage_issues = [i for i in all_issues if "COVERAGE" in i.upper() or "GAP" in i.upper()]
+        testability_issues = [i for i in all_issues if "TESTABILITY" in i.upper() or "TESTABLE" in i.upper() or "MEASURABLE" in i.upper()]
+        other_issues = [i for i in all_issues if i not in coverage_issues and i not in testability_issues]
+        
+        # Take top 3 most critical
+        prioritized_issues = (coverage_issues + testability_issues + other_issues)[:3]
+        
         log.info(
-            "[Quality Checker] Status: %s | Score: %s/10 | Issues: %d | Iteration: %d",
-            result.get("status"), score, len(issues), new_iteration
+            "[Quality Checker] Status: %s | Score: %s/10 | Total Issues: %d | Prioritized: %d | Iteration: %d",
+            result.get("status"), score, len(all_issues), len(prioritized_issues), new_iteration
         )
+        log.info("[Quality Checker] Issues: %s", prioritized_issues)
+        
+        issues = prioritized_issues
+        
     except json.JSONDecodeError:
-        # Safe default: reject so the architect gets another attempt
         log.warning("[Quality Checker] JSON parse failed — defaulting to REJECTED for safety")
         approved = False
-        feedback = "Quality check response could not be parsed. Please regenerate the backlog with stricter JSON formatting."
+        feedback = "Quality check response could not be parsed. Please regenerate with valid JSON."
         score = None
         issues = ["Quality auditor response was malformed"]
 
@@ -344,7 +415,7 @@ Return ONLY valid JSON, no markdown."""
     history_entry = {
         "iteration": new_iteration,
         "score": score,
-        "status": result.get("status"),
+        "status": result.get("status") if 'result' in locals() else "ERROR",
         "issues": issues,
         "timestamp": time.time()
     }
@@ -376,15 +447,29 @@ def should_generate_voc(state: RequirementsState) -> Literal["voc_generator", "v
 def quality_gate(state: RequirementsState) -> Literal["requirement_architect", "end"]:
     """
     Loop back to architect if quality fails.
-    Exits when: approved=True OR iteration >= MAX_ITERATIONS.
-    MAX_ITERATIONS = 3 means: 1 original + 2 revision cycles.
+    Force exit if score is stagnating (same score for 3+ iterations).
     """
     if state.get("approved", False):
         log.info("[Quality Gate] APPROVED — pipeline complete")
         return "end"
-    if state.get("iteration", 0) >= MAX_ITERATIONS:
+    
+    iteration = state.get("iteration", 0)
+    
+    # Check for stagnation (same score 2+ times)
+    history = state.get("iteration_history", [])
+    if len(history) > 2:
+        last_two_scores = [h.get("score") for h in history[-2:]]
+        if last_two_scores[0] == last_two_scores[1] and last_two_scores[0] is not None:
+            log.warning(
+                "[Quality Gate] Score stagnated at %d/10 for 2 iterations — forcing exit",
+                last_two_scores[0]
+            )
+            return "end"
+    
+    if iteration >= MAX_ITERATIONS:
         log.warning("[Quality Gate] Max iterations (%d) reached — exiting without approval", MAX_ITERATIONS)
         return "end"
+        
     log.info("[Quality Gate] REJECTED — sending back to architect for revision")
     return "requirement_architect"
 
