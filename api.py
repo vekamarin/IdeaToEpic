@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 import json
 import asyncio
+import traceback
 
 from idea2epic import run_pipeline, llm, build_voc_prompt, build_streaming_pipeline
 from langchain_core.messages import HumanMessage
@@ -84,29 +85,6 @@ def health_check():
     return {"status": "ok", "message": "IdeaToEpic API is running", "version": "2.0.0"}
 
 
-@app.post("/generate", response_model=GenerateResponse)
-def generate_requirements(request: GenerateRequest):
-    """
-    Main endpoint. Runs the full LangGraph multi-agent pipeline.
-    Returns a structured backlog: epics → features → user stories.
-    """
-    if not request.generate_voc and not (request.voc_input or "").strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Provide either voc_input text or set generate_voc to True."
-        )
-
-    try:
-        result = run_pipeline(
-            product_domain=request.product_domain,
-            voc_input=request.voc_input or "",
-            generate_voc=request.generate_voc
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
-
-
 @app.post("/generate-voc-only")
 def generate_voc_only(request: VocOnlyRequest):
     """
@@ -126,12 +104,6 @@ def generate_voc_only(request: VocOnlyRequest):
 async def generate_requirements_stream(request: GenerateRequest):
     """
     Streaming endpoint. Emits Server-Sent Events (SSE) as the pipeline progresses.
-    
-    Event format:
-    - event: node_complete
-    - data: JSON with node name, current state metrics, iteration count
-    
-    Frontend can consume with EventSource or fetch API.
     """
     if not request.generate_voc and not (request.voc_input or "").strip():
         raise HTTPException(
@@ -155,55 +127,73 @@ async def generate_requirements_stream(request: GenerateRequest):
                 "quality_score": None,
                 "quality_issues": [],
                 "approved": False,
-                "iteration": 0
+                "iteration": 0,
+                "iteration_history": []  # ✅ Added
             }
             
-            last_node = None
+            seen_events = set()  # ✅ Changed from last_node
+            last_state = None
             
-            # Stream state updates as each node completes
             async for state_update in pipeline.astream(initial_state):
-                # state_update is a dict like {"node_name": updated_state}
                 for node_name, current_state in state_update.items():
-                    if node_name == last_node:
-                        continue  # Skip duplicate emissions
+                    # ✅ Track by (node, iteration) instead of just node
+                    iteration = current_state.get("iteration", 0)
+                    event_key = (node_name, iteration)
                     
-                    last_node = node_name
+                    if event_key in seen_events:
+                        continue
                     
-                    # Build status update
+                    seen_events.add(event_key)
+                    
                     status = {
                         "node": node_name,
                         "needs_count": len(current_state.get("stakeholder_needs", [])),
                         "epics_count": len(current_state.get("epics", [])),
                         "features_count": len(current_state.get("features", [])),
                         "stories_count": len(current_state.get("user_stories", [])),
-                        "iteration": current_state.get("iteration", 0),
+                        "iteration": iteration,
                         "approved": current_state.get("approved", False),
                         "quality_score": current_state.get("quality_score")
                     }
                     
                     yield f"event: node_complete\n"
                     yield f"data: {json.dumps(status)}\n\n"
-                    await asyncio.sleep(0.01)  # Small delay to ensure events are sent
+                    await asyncio.sleep(0.01)
+                    
+                    last_state = current_state
             
-            # Send final complete state
-            final_result = {
-                "voc_used": current_state["voc_input"],
-                "stakeholder_needs": current_state["stakeholder_needs"],
-                "epics": current_state["epics"],
-                "features": current_state["features"],
-                "user_stories": current_state["user_stories"],
-                "quality_approved": current_state["approved"],
-                "quality_score": current_state.get("quality_score"),
-                "quality_issues": current_state.get("quality_issues", []),
-                "iterations": current_state["iteration"]
-            }
-            
-            yield f"event: final_result\n"
-            yield f"data: {json.dumps(final_result)}\n\n"
+            # ✅ Fixed: only yield if we have state
+            if last_state:
+                final_result = {
+                    "voc_used": last_state["voc_input"],
+                    "stakeholder_needs": last_state["stakeholder_needs"],
+                    "epics": last_state["epics"],
+                    "features": last_state["features"],
+                    "user_stories": last_state["user_stories"],
+                    "quality_approved": last_state["approved"],
+                    "quality_score": last_state.get("quality_score"),
+                    "quality_issues": last_state.get("quality_issues", []),
+                    "iterations": last_state["iteration"],
+                    "iteration_history": last_state.get("iteration_history", [])
+                }
+                
+                yield f"event: final_result\n"
+                yield f"data: {json.dumps(final_result)}\n\n"
+            else:
+                yield f"event: error\n"
+                yield f"data: {json.dumps({'error': 'Pipeline completed with no state'})}\n\n"
             
         except Exception as e:
+            # ✅ Better error reporting
+            error_details = {
+                'error': str(e),
+                'type': type(e).__name__,
+                'traceback': traceback.format_exc()
+            }
+            print(f"Stream error:\n{error_details['traceback']}")
+            
             yield f"event: error\n"
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps(error_details)}\n\n"
     
     return StreamingResponse(
         event_generator(),
