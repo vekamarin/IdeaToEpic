@@ -167,11 +167,24 @@ def requirement_architect_node(state: RequirementsState) -> RequirementsState:
     t0 = time.time()
 
     needs_text = json.dumps(state["stakeholder_needs"], indent=2)
-    feedback_section = (
-        f"Quality feedback to address:\n{state['quality_feedback']}"
-        if state.get("quality_feedback")
-        else "No prior feedback — this is the first attempt."
-    )
+    
+    # Show previous attempt if this is a revision
+    previous_attempt = ""
+    if state.get("quality_feedback") and state.get("epics"):
+        previous_attempt = f"""
+PREVIOUS ATTEMPT (Score: {state.get('quality_score', 'N/A')}/10):
+{json.dumps({"epics": state["epics"]}, indent=2)}
+
+QUALITY ISSUES FOUND:
+{json.dumps(state.get("quality_issues", []), indent=2)}
+
+REQUIRED FIXES:
+{state['quality_feedback']}
+
+INSTRUCTIONS: Fix ONLY the identified issues. Keep what was good. Do not regenerate from scratch.
+"""
+    else:
+        previous_attempt = "This is your first attempt. Generate a complete backlog."
 
     prompt = f"""You are a senior systems engineer specializing in requirements architecture.
 
@@ -180,7 +193,7 @@ Given these stakeholder needs, generate a fully traceable product backlog hierar
 STAKEHOLDER NEEDS:
 {needs_text}
 
-{feedback_section}
+{previous_attempt}
 
 Generate the following structure as valid JSON:
 {{
@@ -216,8 +229,21 @@ Rules:
 - 2-4 Features per Epic
 - 2-3 User Stories per Feature
 - Every ID must create a clear traceability chain (US references F, F references E)
-- Acceptance criteria must be measurable and testable — no vague language
-- Return ONLY valid JSON, no markdown, no explanation"""
+- Acceptance criteria must be measurable and testable - use Given/When/Then format
+- Each acceptance criterion must have a measurable outcome (numbers, time, specific state changes)
+- Cover ALL stakeholder personas mentioned in the needs
+- Return ONLY valid JSON, no markdown, no explanation
+
+BAD acceptance criteria examples:
+- "System should be fast" (not measurable)
+- "User interface is intuitive" (subjective)
+- "Notifications work properly" (vague)
+
+GOOD acceptance criteria examples:
+- "Given a schedule change, When saved, Then notification appears within 30 seconds"
+- "Given 100 concurrent users, When loading dashboard, Then page loads in under 2 seconds"
+- "Given invalid input, When submitted, Then error message displays with specific field highlighted"
+"""
 
     response = llm.invoke([HumanMessage(content=prompt)])
 
@@ -256,7 +282,7 @@ def quality_checker_node(state: RequirementsState) -> RequirementsState:
 
     prompt = f"""You are a requirements quality auditor with 15+ years of experience.
 
-Review this product backlog against the original stakeholder needs and identify issues.
+Review this product backlog against the original stakeholder needs and identify specific issues.
 
 ORIGINAL STAKEHOLDER NEEDS:
 {json.dumps(state['stakeholder_needs'], indent=2)}
@@ -264,19 +290,29 @@ ORIGINAL STAKEHOLDER NEEDS:
 GENERATED BACKLOG:
 {json.dumps(backlog_summary, indent=2)}
 
-Check for:
-1. Missing traceability links (stories without features, features without epics)
-2. Ambiguous or untestable user stories
-3. Stakeholder needs not covered by any epic/feature
-4. Acceptance criteria that are vague or unmeasurable
-5. Conflicting requirements not addressed
+Audit criteria:
+1. Traceability: Every story ID must reference a valid feature ID, every feature ID must reference an epic ID
+2. Testability: Acceptance criteria must use Given/When/Then or measurable conditions (no "should be user-friendly")
+3. Coverage: Every stakeholder persona and pain point must be addressed by at least one user story
+4. Clarity: User stories must follow "As a [specific role], I want [specific action] so that [specific benefit]"
+5. Completeness: No placeholder text like "TBD", "etc", or vague outcomes
+
+Scoring guide:
+- 9-10: Production-ready, minimal fixes needed
+- 7-8: Good structure, but has vague acceptance criteria or minor traceability gaps
+- 5-6: Missing coverage for stakeholders OR multiple untestable stories
+- 3-4: Significant structural issues, poor traceability
+- 1-2: Unusable, major gaps
+
+CRITICAL: Be specific in your feedback. Don't say "some stories are vague" - say "US1.2.1 has untestable criteria". 
+Don't say "improve traceability" - say "Feature F2.3 references non-existent Epic E5".
 
 Return JSON:
 {{
   "status": "APPROVED" or "REJECTED",
   "score": <integer 1-10>,
-  "issues": ["issue 1", "issue 2"],
-  "feedback": "Specific, actionable instructions for the architect to fix if REJECTED. Empty string if APPROVED."
+  "issues": ["US1.2.1: acceptance criteria 'easy to use' is not measurable", "Nurse persona pain point about real-time updates not covered by any story"],
+  "feedback": "Specific fixes with IDs. Example: 'Rewrite US1.2.1 acceptance criteria to be measurable. Add story for Nurse real-time notification need.'"
 }}
 
 Return ONLY valid JSON, no markdown."""
