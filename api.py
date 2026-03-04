@@ -64,6 +64,7 @@ class GenerateResponse(BaseModel):
     quality_score: Optional[int]
     quality_issues: List[str]
     iterations: int
+    iteration_history: Optional[List[dict]] = []
 
 
 class VocOnlyRequest(BaseModel):

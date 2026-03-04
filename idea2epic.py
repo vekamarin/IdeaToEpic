@@ -563,7 +563,8 @@ def run_pipeline(product_domain: str, voc_input: str = "", generate_voc: bool = 
         "quality_score": None,
         "quality_issues": [],
         "approved": False,
-        "iteration": 0
+        "iteration": 0,
+        "iteration_history": []
     }
 
     final_state = pipeline.invoke(initial_state)
