@@ -120,7 +120,7 @@ async def generate_requirements_stream(request: GenerateRequest):
         try:
             # Get RAG context if documents have been uploaded
             rag_context = ""
-            if rag_manager.vector_store.chunks:
+            if rag_manager.chunks:
                 # Retrieve context based on product domain + VOC
                 query = f"{request.product_domain} {request.voc_input[:200]}"
                 rag_context = rag_manager.retrieve_context(query, top_k=5)
