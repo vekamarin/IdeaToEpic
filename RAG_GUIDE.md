@@ -160,8 +160,6 @@ Current implementation is MVP-focused. For production:
 - Use **larger embedding models** (e.g., bge-large-en-v1.5)
 - Add **metadata filtering** (by document type, date, etc.)
 
-But start simple — this implementation handles most use cases.
-
 ## Dependencies
 
 ```bash
@@ -169,10 +167,3 @@ pip install sentence-transformers numpy PyPDF2 python-docx
 ```
 
 All included in `requirements.txt`.
-
-## Testing
-
-See `test_rag.py` for examples of:
-- Uploading documents
-- Running pipeline with RAG context
-- Comparing results with/without RAG
