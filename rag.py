@@ -72,7 +72,7 @@ def chunk_text(text: str, source: str, chunk_size: int = 500, overlap: int = 100
 class RAGManager:
     """Simple RAG with in-memory vector store"""
     
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str = "paraphrase-MiniLM-L3-v2"):
         self.model = SentenceTransformer(model_name)
         self.chunks = []
         self.embeddings = None
