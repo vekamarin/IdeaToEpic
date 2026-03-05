@@ -61,6 +61,7 @@ class RequirementsState(TypedDict):
     product_domain: str           # e.g. "hospital scheduling app"
     generate_voc: bool            # True = auto-generate VOC
     voc_input: str                # raw VOC text (user-written or generated)
+    rag_context: str              # Retrieved context from uploaded documents
 
     # Pipeline outputs
     stakeholder_needs: list       # extracted from VOC
@@ -162,12 +163,30 @@ def requirement_architect_node(state: RequirementsState) -> RequirementsState:
     """
     Builds the Epic → Feature → User Story hierarchy with full traceability.
     On revision cycles, quality_feedback is injected into the prompt.
+    Uses RAG context from uploaded documents if available.
     """
     iteration = state.get("iteration", 0)
     log.info("[Requirement Architect] Building backlog (attempt %d/%d)", iteration + 1, MAX_ITERATIONS)
     t0 = time.time()
 
     needs_text = json.dumps(state["stakeholder_needs"], indent=2)
+    
+    # Add RAG context if available
+    rag_section = ""
+    if state.get("rag_context", "").strip():
+        rag_section = f"""
+REFERENCE DOCUMENTS (consider these when building requirements):
+════════════════════════════════════════════════════════════════
+{state['rag_context']}
+════════════════════════════════════════════════════════════════
+
+Use this context to:
+- Align with existing technical constraints
+- Reference existing features or requirements
+- Ensure consistency with documented standards
+- Add implementation details where relevant
+
+"""
     
     # Show previous attempt if this is a revision
     if state.get("quality_feedback") and state.get("epics"):
@@ -245,6 +264,8 @@ Given these stakeholder needs, generate a fully traceable product backlog hierar
 
 STAKEHOLDER NEEDS:
 {needs_text}
+
+{rag_section}
 
 {previous_attempt}
 
@@ -540,13 +561,14 @@ build_streaming_pipeline = build_pipeline
 # 6. PUBLIC RUNNER (used by FastAPI and Streamlit)
 # ─────────────────────────────────────────────
 
-def run_pipeline(product_domain: str, voc_input: str = "", generate_voc: bool = False) -> dict:
+def run_pipeline(product_domain: str, voc_input: str = "", generate_voc: bool = False, rag_context: str = "") -> dict:
     """
     Main entry point. Called by FastAPI.
     Returns the final state with all generated artifacts.
     """
     log.info("=" * 60)
-    log.info("Pipeline start | domain='%s' | generate_voc=%s", product_domain, generate_voc)
+    log.info("Pipeline start | domain='%s' | generate_voc=%s | has_rag=%s", 
+             product_domain, generate_voc, bool(rag_context))
     t_start = time.time()
 
     pipeline = build_pipeline()
@@ -555,6 +577,7 @@ def run_pipeline(product_domain: str, voc_input: str = "", generate_voc: bool = 
         "product_domain": product_domain,
         "generate_voc": generate_voc,
         "voc_input": voc_input,
+        "rag_context": rag_context,
         "stakeholder_needs": [],
         "epics": [],
         "features": [],

@@ -3,7 +3,7 @@ FastAPI wrapper for the IdeaToEpic Requirements Generation Pipeline.
 Run locally with: uvicorn api:app --reload
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -14,6 +14,7 @@ import traceback
 
 from idea2epic import run_pipeline, llm, build_voc_prompt, build_streaming_pipeline
 from langchain_core.messages import HumanMessage
+from rag import RAGManager
 
 # ─────────────────────────────────────────────
 # 1. APP SETUP
@@ -32,6 +33,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize RAG manager (singleton for this instance)
+rag_manager = RAGManager()
 
 
 # ─────────────────────────────────────────────
@@ -104,6 +108,7 @@ def generate_voc_only(request: VocOnlyRequest):
 async def generate_requirements_stream(request: GenerateRequest):
     """
     Streaming endpoint. Emits Server-Sent Events (SSE) as the pipeline progresses.
+    Uses any uploaded documents for RAG context.
     """
     if not request.generate_voc and not (request.voc_input or "").strip():
         raise HTTPException(
@@ -113,12 +118,20 @@ async def generate_requirements_stream(request: GenerateRequest):
 
     async def event_generator():
         try:
+            # Get RAG context if documents have been uploaded
+            rag_context = ""
+            if rag_manager.vector_store.chunks:
+                # Retrieve context based on product domain + VOC
+                query = f"{request.product_domain} {request.voc_input[:200]}"
+                rag_context = rag_manager.retrieve_context(query, top_k=5)
+            
             pipeline = build_streaming_pipeline()
             
             initial_state = {
                 "product_domain": request.product_domain,
                 "generate_voc": request.generate_voc,
                 "voc_input": request.voc_input or "",
+                "rag_context": rag_context,
                 "stakeholder_needs": [],
                 "epics": [],
                 "features": [],
@@ -203,6 +216,44 @@ async def generate_requirements_stream(request: GenerateRequest):
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@app.post("/documents/upload")
+async def upload_document(file: UploadFile = File(...)):
+    """
+    Upload a document for RAG context.
+    Supported formats: PDF, DOCX, TXT, MD
+    """
+    try:
+        # Read file content
+        content = await file.read()
+        
+        # Process and index
+        chunks_added = rag_manager.ingest_document(content, file.filename)
+        
+        return {
+            "status": "success",
+            "filename": file.filename,
+            "chunks_added": chunks_added,
+            "stats": rag_manager.get_stats()
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+
+
+@app.get("/documents/stats")
+def get_document_stats():
+    """Get statistics about uploaded documents"""
+    return rag_manager.get_stats()
+
+
+@app.delete("/documents/clear")
+def clear_documents():
+    """Clear all uploaded documents"""
+    rag_manager.clear()
+    return {"status": "success", "message": "All documents cleared"}
 
 
 
