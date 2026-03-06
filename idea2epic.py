@@ -7,10 +7,10 @@ import os
 import json
 import time
 import logging
-from typing import TypedDict, Literal, Optional
+from typing import TypedDict, Literal, Optional, Dict
 from langgraph.graph import StateGraph, END
-from langchain_deepseek import ChatDeepSeek
 from langchain_core.messages import HumanMessage
+from langchain_core.language_models import BaseChatModel
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -37,18 +37,97 @@ log = logging.getLogger("idea2epic")
 
 
 # ─────────────────────────────────────────────
-# 1. SETUP
+# 1. SETUP - MULTI-PROVIDER LLM FACTORY
 # ─────────────────────────────────────────────
 
 # Config 
-MAX_ITERATIONS = 5 # 1 initial attempt + 4 revision cycles if not stuck in score
+MAX_ITERATIONS = 5
 
-# LLM setup - replace with your preferred model
-llm = ChatDeepSeek(
-    model="deepseek-chat",
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
-    temperature=0.3
-)
+# Available LLM providers
+LLMProvider = Literal["groq", "deepseek", "openai", "google", "anthropic"]
+
+# Pricing per 1M tokens (input, output)
+PRICING = {
+    "groq": (0.0, 0.0),  # Free tier
+    "deepseek": (0.14, 0.28),
+    "openai": (2.50, 10.00),  # GPT-4o
+    "google": (0.0, 0.0),  # Gemini 1.5 Flash free tier
+    "anthropic": (3.00, 15.00),  # Claude Sonnet
+}
+
+
+def get_llm(provider: LLMProvider = "groq", temperature: float = 0.3) -> BaseChatModel:
+    """
+    LLM factory - returns configured model based on provider.
+    Default: Groq (free, fast)
+    """
+    if provider == "groq":
+        from langchain_groq import ChatGroq
+        return ChatGroq(
+            model="llama-3.3-70b-versatile",
+            api_key=os.getenv("GROQ_API_KEY"),
+            temperature=temperature
+        )
+    
+    elif provider == "deepseek":
+        from langchain_deepseek import ChatDeepSeek
+        return ChatDeepSeek(
+            model="deepseek-chat",
+            api_key=os.getenv("DEEPSEEK_API_KEY"),
+            temperature=temperature
+        )
+    
+    elif provider == "openai":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model="gpt-4o",
+            api_key=os.getenv("OPENAI_API_KEY"),
+            temperature=temperature
+        )
+    
+    elif provider == "google":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash",
+            google_api_key=os.getenv("GOOGLE_API_KEY"),
+            temperature=temperature
+        )
+    
+    elif provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(
+            model="claude-3-5-sonnet-20241022",
+            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            temperature=temperature
+        )
+    
+    else:
+        raise ValueError(f"Unknown provider: {provider}. Choose from: groq, deepseek, openai, google, anthropic")
+
+
+def track_usage(response, provider: str, usage_log: list):
+    """Extract and log token usage from LLM response"""
+    if hasattr(response, 'usage_metadata') and response.usage_metadata:
+        usage = response.usage_metadata
+        usage_log.append({
+            "provider": provider,
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        })
+    elif hasattr(response, 'response_metadata'):
+        # Some providers store it differently
+        meta = response.response_metadata
+        if 'token_usage' in meta:
+            usage = meta['token_usage']
+            usage_log.append({
+                "provider": provider,
+                "input_tokens": usage.get("prompt_tokens", 0),
+                "output_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            })
+    
+    return usage_log
 
 # Utility function to clean JSON output from LLM
 def clean_json(text: str) -> str:
@@ -62,6 +141,7 @@ class RequirementsState(TypedDict):
     generate_voc: bool            # True = auto-generate VOC
     voc_input: str                # raw VOC text (user-written or generated)
     rag_context: str              # Retrieved context from uploaded documents
+    llm_provider: str             # Which LLM to use (groq, deepseek, etc.)
 
     # Pipeline outputs
     stakeholder_needs: list       # extracted from VOC
@@ -78,6 +158,9 @@ class RequirementsState(TypedDict):
     # Pipeline allows up to MAX_ITERATIONS checks before forcing exit.
     iteration: int
     iteration_history: list  # Track each iteration's score and issues
+    
+    # Token usage tracking
+    usage_log: list  # List of token usage per LLM call
 
 # ─────────────────────────────────────────────
 # 2. SHARED PROMPT BUILDER
@@ -109,11 +192,16 @@ def voc_generator_node(state: RequirementsState) -> RequirementsState:
     """
     log.info("[VOC Generator] Starting VOC generation for domain: '%s'", state["product_domain"])
     t0 = time.time()
-
+    
+    llm = get_llm(state.get("llm_provider", "groq"))
     response = llm.invoke([HumanMessage(content=build_voc_prompt(state["product_domain"]))])
+    
+    # Track usage
+    usage_log = state.get("usage_log", []).copy()
+    track_usage(response, state.get("llm_provider", "groq"), usage_log)
 
     log.info("[VOC Generator] Done in %.1fs", time.time() - t0)
-    return {**state, "voc_input": response.content}
+    return {**state, "voc_input": response.content, "usage_log": usage_log}
 
 
 def voc_analyst_node(state: RequirementsState) -> RequirementsState:
@@ -147,7 +235,12 @@ Example format:
   }}
 ]"""
 
+    llm = get_llm(state.get("llm_provider", "groq"))
     response = llm.invoke([HumanMessage(content=prompt)])
+    
+    # Track usage
+    usage_log = state.get("usage_log", []).copy()
+    track_usage(response, state.get("llm_provider", "groq"), usage_log)
 
     try:
         needs = json.loads(clean_json(response.content))
@@ -156,7 +249,7 @@ Example format:
         log.warning("[VOC Analyst] JSON parse failed — wrapping raw response as fallback")
         needs = [{"raw": response.content}]
 
-    return {**state, "stakeholder_needs": needs}
+    return {**state, "stakeholder_needs": needs, "usage_log": usage_log}
 
 
 def requirement_architect_node(state: RequirementsState) -> RequirementsState:
@@ -319,7 +412,12 @@ MEASURABILITY EXAMPLES:
 ✅ GOOD: "Push notification appears on user's device within 30 seconds of schedule change"
 """
 
+    llm = get_llm(state.get("llm_provider", "groq"))
     response = llm.invoke([HumanMessage(content=prompt)])
+    
+    # Track usage
+    usage_log = state.get("usage_log", []).copy()
+    track_usage(response, state.get("llm_provider", "groq"), usage_log)
 
     try:
         hierarchy = json.loads(clean_json(response.content))
@@ -336,7 +434,7 @@ MEASURABILITY EXAMPLES:
         "[Requirement Architect] Built %d epics, %d features, %d stories in %.1fs",
         len(epics), len(features), len(stories), time.time() - t0
     )
-    return {**state, "epics": epics, "features": features, "user_stories": stories}
+    return {**state, "epics": epics, "features": features, "user_stories": stories, "usage_log": usage_log}
 
 
 def quality_checker_node(state: RequirementsState) -> RequirementsState:
@@ -426,7 +524,13 @@ Return JSON:
 
 Return ONLY valid JSON, no markdown."""
 
+    llm = get_llm(state.get("llm_provider", "groq"))
     response = llm.invoke([HumanMessage(content=prompt)])
+    
+    # Track usage
+    usage_log = state.get("usage_log", []).copy()
+    track_usage(response, state.get("llm_provider", "groq"), usage_log)
+    
     new_iteration = state.get("iteration", 0) + 1
 
     try:
@@ -478,7 +582,8 @@ Return ONLY valid JSON, no markdown."""
         "quality_score": score,
         "quality_issues": issues,
         "iteration": new_iteration,
-        "iteration_history": current_history
+        "iteration_history": current_history,
+        "usage_log": usage_log
     }
 
 
@@ -561,14 +666,20 @@ build_streaming_pipeline = build_pipeline
 # 6. PUBLIC RUNNER (used by FastAPI and Streamlit)
 # ─────────────────────────────────────────────
 
-def run_pipeline(product_domain: str, voc_input: str = "", generate_voc: bool = False, rag_context: str = "") -> dict:
+def run_pipeline(
+    product_domain: str, 
+    voc_input: str = "", 
+    generate_voc: bool = False, 
+    rag_context: str = "",
+    llm_provider: LLMProvider = "groq"
+) -> dict:
     """
     Main entry point. Called by FastAPI.
     Returns the final state with all generated artifacts.
     """
     log.info("=" * 60)
-    log.info("Pipeline start | domain='%s' | generate_voc=%s | has_rag=%s", 
-             product_domain, generate_voc, bool(rag_context))
+    log.info("Pipeline start | domain='%s' | generate_voc=%s | has_rag=%s | provider=%s", 
+             product_domain, generate_voc, bool(rag_context), llm_provider)
     t_start = time.time()
 
     pipeline = build_pipeline()
@@ -578,6 +689,7 @@ def run_pipeline(product_domain: str, voc_input: str = "", generate_voc: bool = 
         "generate_voc": generate_voc,
         "voc_input": voc_input,
         "rag_context": rag_context,
+        "llm_provider": llm_provider,
         "stakeholder_needs": [],
         "epics": [],
         "features": [],
@@ -587,14 +699,25 @@ def run_pipeline(product_domain: str, voc_input: str = "", generate_voc: bool = 
         "quality_issues": [],
         "approved": False,
         "iteration": 0,
-        "iteration_history": []
+        "iteration_history": [],
+        "usage_log": []
     }
 
     final_state = pipeline.invoke(initial_state)
+    
+    # Calculate token usage summary
+    usage_log = final_state.get("usage_log", [])
+    total_input = sum(u.get("input_tokens", 0) for u in usage_log)
+    total_output = sum(u.get("output_tokens", 0) for u in usage_log)
+    total_tokens = sum(u.get("total_tokens", 0) for u in usage_log)
+    
+    # Calculate cost
+    pricing = PRICING.get(llm_provider, (0, 0))
+    cost = (total_input / 1_000_000) * pricing[0] + (total_output / 1_000_000) * pricing[1]
 
     log.info(
-        "Pipeline complete | approved=%s | iterations=%d | total=%.1fs",
-        final_state["approved"], final_state["iteration"], time.time() - t_start
+        "Pipeline complete | approved=%s | iterations=%d | tokens=%d | cost=$%.4f | total=%.1fs",
+        final_state["approved"], final_state["iteration"], total_tokens, cost, time.time() - t_start
     )
     log.info("=" * 60)
 
@@ -608,7 +731,15 @@ def run_pipeline(product_domain: str, voc_input: str = "", generate_voc: bool = 
         "quality_score": final_state.get("quality_score"),
         "quality_issues": final_state.get("quality_issues", []),
         "iterations": final_state["iteration"],
-        "iteration_history": final_state.get("iteration_history", [])
+        "iteration_history": final_state.get("iteration_history", []),
+        "token_usage": {
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+            "total_tokens": total_tokens,
+            "estimated_cost": round(cost, 4),
+            "provider": llm_provider,
+            "calls": len(usage_log)
+        }
     }
 
 

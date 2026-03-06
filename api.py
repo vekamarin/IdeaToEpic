@@ -12,7 +12,7 @@ import json
 import asyncio
 import traceback
 
-from idea2epic import run_pipeline, llm, build_voc_prompt, build_streaming_pipeline
+from idea2epic import run_pipeline, build_voc_prompt, build_streaming_pipeline
 from langchain_core.messages import HumanMessage
 from rag import RAGManager
 
@@ -57,6 +57,11 @@ class GenerateRequest(BaseModel):
         default=False,
         description="Set to True to auto-generate VOC from product_domain"
     )
+    llm_provider: Optional[str] = Field(
+        default="groq",
+        description="LLM provider to use: groq (default, free), deepseek, openai, google, anthropic",
+        example="groq"
+    )
 
 
 class GenerateResponse(BaseModel):
@@ -70,12 +75,18 @@ class GenerateResponse(BaseModel):
     quality_issues: List[str]
     iterations: int
     iteration_history: Optional[List[dict]] = []
+    token_usage: Optional[dict] = None  # {input_tokens, output_tokens, total_tokens, estimated_cost, provider, calls}
 
 
 class VocOnlyRequest(BaseModel):
     product_domain: str = Field(
         ...,
         example="hospital patient scheduling system"
+    )
+    llm_provider: Optional[str] = Field(
+        default="groq",
+        description="LLM provider to use",
+        example="groq"
     )
 
 
@@ -97,8 +108,10 @@ def generate_voc_only(request: VocOnlyRequest):
     as the internal voc_generator_node (single source of truth).
     """
     try:
+        from idea2epic import get_llm
         prompt = build_voc_prompt(request.product_domain)
-        response = llm.invoke([HumanMessage(content=prompt)])
+        llm_instance = get_llm(request.llm_provider)
+        response = llm_instance.invoke([HumanMessage(content=prompt)])
         return {"voc_text": response.content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -132,6 +145,7 @@ async def generate_requirements_stream(request: GenerateRequest):
                 "generate_voc": request.generate_voc,
                 "voc_input": request.voc_input or "",
                 "rag_context": rag_context,
+                "llm_provider": request.llm_provider or "groq",
                 "stakeholder_needs": [],
                 "epics": [],
                 "features": [],
@@ -141,7 +155,8 @@ async def generate_requirements_stream(request: GenerateRequest):
                 "quality_issues": [],
                 "approved": False,
                 "iteration": 0,
-                "iteration_history": []  # ✅ Added
+                "iteration_history": [],
+                "usage_log": []
             }
             
             seen_events = set()  # ✅ Changed from last_node
@@ -158,6 +173,10 @@ async def generate_requirements_stream(request: GenerateRequest):
                     
                     seen_events.add(event_key)
                     
+                    # Calculate current token usage
+                    usage_log = current_state.get("usage_log", [])
+                    current_tokens = sum(u.get("total_tokens", 0) for u in usage_log)
+                    
                     status = {
                         "node": node_name,
                         "needs_count": len(current_state.get("stakeholder_needs", [])),
@@ -166,7 +185,8 @@ async def generate_requirements_stream(request: GenerateRequest):
                         "stories_count": len(current_state.get("user_stories", [])),
                         "iteration": iteration,
                         "approved": current_state.get("approved", False),
-                        "quality_score": current_state.get("quality_score")
+                        "quality_score": current_state.get("quality_score"),
+                        "tokens_used": current_tokens
                     }
                     
                     yield f"event: node_complete\n"
@@ -175,8 +195,18 @@ async def generate_requirements_stream(request: GenerateRequest):
                     
                     last_state = current_state
             
-            # ✅ Fixed: only yield if we have state
             if last_state:
+                # Calculate final token usage
+                usage_log = last_state.get("usage_log", [])
+                total_input = sum(u.get("input_tokens", 0) for u in usage_log)
+                total_output = sum(u.get("output_tokens", 0) for u in usage_log)
+                total_tokens = sum(u.get("total_tokens", 0) for u in usage_log)
+                
+                from idea2epic import PRICING
+                provider = last_state.get("llm_provider", "groq")
+                pricing = PRICING.get(provider, (0, 0))
+                cost = (total_input / 1_000_000) * pricing[0] + (total_output / 1_000_000) * pricing[1]
+                
                 final_result = {
                     "voc_used": last_state["voc_input"],
                     "stakeholder_needs": last_state["stakeholder_needs"],
@@ -187,7 +217,15 @@ async def generate_requirements_stream(request: GenerateRequest):
                     "quality_score": last_state.get("quality_score"),
                     "quality_issues": last_state.get("quality_issues", []),
                     "iterations": last_state["iteration"],
-                    "iteration_history": last_state.get("iteration_history", [])
+                    "iteration_history": last_state.get("iteration_history", []),
+                    "token_usage": {
+                        "input_tokens": total_input,
+                        "output_tokens": total_output,
+                        "total_tokens": total_tokens,
+                        "estimated_cost": round(cost, 4),
+                        "provider": provider,
+                        "calls": len(usage_log)
+                    }
                 }
                 
                 yield f"event: final_result\n"

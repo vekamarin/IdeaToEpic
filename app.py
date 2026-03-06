@@ -6,7 +6,7 @@ Run with: streamlit run app.py
 import json
 import time
 import streamlit as st
-from idea2epic import run_pipeline, llm, build_voc_prompt
+from idea2epic import run_pipeline, get_llm, build_voc_prompt
 from langchain_core.messages import HumanMessage
 
 # ─────────────────────────────────────────────
@@ -28,6 +28,26 @@ with st.sidebar:
     st.title("🧠 IdeaToEpic")
     st.caption("Multi-agent requirements generator")
     st.divider()
+    
+    # ─── LLM Provider Selector ───
+    st.subheader("⚙️ LLM Provider")
+    llm_provider = st.selectbox(
+        "Choose LLM",
+        ["groq", "deepseek", "openai", "google", "anthropic"],
+        index=0,  # Default to Groq
+        help="Groq and Google are free tiers. DeepSeek is cheap. OpenAI and Anthropic are paid."
+    )
+    
+    provider_info = {
+        "groq": "🆓 Free, Fast (Llama 3.3 70B)",
+        "deepseek": "💵 $0.14/$0.28 per 1M tokens",
+        "openai": "💰 $2.50/$10.00 per 1M tokens (GPT-4o)",
+        "google": "🆓 Free tier (Gemini 1.5 Flash)",
+        "anthropic": "💰 $3.00/$15.00 per 1M tokens (Claude Sonnet)"
+    }
+    st.caption(provider_info.get(llm_provider, ""))
+    
+    st.divider()
 
     st.subheader("How it works")
     st.markdown("""
@@ -37,7 +57,7 @@ with st.sidebar:
 4. **Quality Gate** — loops back if rejected (max 3 attempts)
 """)
     st.divider()
-    st.caption("Powered by LangGraph + Groq")
+    st.caption("Powered by LangGraph + Multi-LLM")
 
 
 # ─────────────────────────────────────────────
@@ -86,7 +106,8 @@ if generate_voc and product_domain:
             with st.spinner("Generating VOC..."):
                 try:
                     prompt = build_voc_prompt(product_domain)
-                    response = llm.invoke([HumanMessage(content=prompt)])
+                    llm_instance = get_llm(llm_provider)
+                    response = llm_instance.invoke([HumanMessage(content=prompt)])
                     st.session_state["voc_preview"] = response.content
                 except Exception as e:
                     st.error(f"Error: {e}")
@@ -140,7 +161,8 @@ if st.button("🚀 Generate Backlog", type="primary", disabled=run_disabled, use
         result = run_pipeline(
             product_domain=product_domain,
             voc_input=voc_input,
-            generate_voc=generate_voc
+            generate_voc=generate_voc,
+            llm_provider=llm_provider
         )
 
         update_step("analyst",  "✅", "VOC Analyst — done")
@@ -173,6 +195,16 @@ if "result" in st.session_state:
     col_q2.metric("Quality Score", f"{result.get('quality_score', 'N/A')}/10")
     col_q3.metric("Iterations", result["iterations"])
     col_q4.metric("Total Time", f"{elapsed:.1f}s")
+    
+    # ─── Token Usage ───
+    if result.get("token_usage"):
+        usage = result["token_usage"]
+        st.markdown("### 📊 Token Usage")
+        col_u1, col_u2, col_u3, col_u4 = st.columns(4)
+        col_u1.metric("Total Tokens", f"{usage['total_tokens']:,}")
+        col_u2.metric("LLM Calls", usage['calls'])
+        col_u3.metric("Provider", usage['provider'].title())
+        col_u4.metric("Est. Cost", f"${usage['estimated_cost']:.4f}")
 
     if result.get("quality_issues"):
         with st.expander(f"⚠️ Quality Issues ({len(result['quality_issues'])} found)", expanded=False):
