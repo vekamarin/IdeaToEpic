@@ -9,7 +9,7 @@ import time
 import logging
 from typing import TypedDict, Literal, Optional
 from langgraph.graph import StateGraph, END
-from langchain_groq import ChatGroq
+from langchain_deepseek import ChatDeepSeek
 from langchain_core.messages import HumanMessage
 from dotenv import load_dotenv
 
@@ -44,9 +44,9 @@ log = logging.getLogger("idea2epic")
 MAX_ITERATIONS = 5 # 1 initial attempt + 4 revision cycles if not stuck in score
 
 # LLM setup - replace with your preferred model
-llm = ChatGroq(
-    model="llama-3.3-70b-versatile",
-    api_key=os.getenv("GROQ_API_KEY"),
+llm = ChatDeepSeek(
+    model="deepseek-chat",
+    api_key=os.getenv("DEEPSEEK_API_KEY"),
     temperature=0.3
 )
 
