@@ -104,6 +104,11 @@ run_disabled = not product_domain or (not generate_voc and not voc_input.strip()
 
 if st.button("🚀 Generate Backlog", type="primary", disabled=run_disabled, use_container_width=True):
 
+    # ─── Reuse VOC preview if it exists ───
+    if generate_voc and "voc_preview" in st.session_state:
+        voc_input = st.session_state["voc_preview"]
+        generate_voc = False  # Don't regenerate, we already have it
+
     # ─── Progress display ───
     progress_container = st.container()
     with progress_container:
