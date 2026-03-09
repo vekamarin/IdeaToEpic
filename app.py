@@ -89,6 +89,13 @@ with col2:
     )
 
 generate_voc = voc_mode == "Auto-generate VOC"
+
+# Clear VOC preview if user switches to manual mode
+if not generate_voc and "voc_preview" in st.session_state:
+    st.session_state.pop("voc_preview", None)
+    st.session_state.pop("voc_preview_domain", None)
+    st.session_state.pop("voc_preview_provider", None)
+
 voc_input = ""
 
 # ─── Manual VOC input ───
@@ -101,6 +108,12 @@ if not generate_voc:
 
 # ─── VOC Preview (auto mode) ───
 if generate_voc and product_domain:
+    # Clear preview if product domain changed
+    if "voc_preview_domain" in st.session_state and st.session_state["voc_preview_domain"] != product_domain:
+        st.session_state.pop("voc_preview", None)
+        st.session_state.pop("voc_preview_domain", None)
+        st.session_state.pop("voc_preview_provider", None)
+    
     with st.expander("👁 Preview auto-generated VOC before running the full pipeline", expanded=False):
         if st.button("Generate VOC Preview"):
             with st.spinner("Generating VOC..."):
@@ -109,6 +122,8 @@ if generate_voc and product_domain:
                     llm_instance = get_llm(llm_provider)
                     response = llm_instance.invoke([HumanMessage(content=prompt)])
                     st.session_state["voc_preview"] = response.content
+                    st.session_state["voc_preview_domain"] = product_domain  # Track which domain this preview is for
+                    st.session_state["voc_preview_provider"] = llm_provider  # Track which provider generated this
                 except Exception as e:
                     st.error(f"Error: {e}")
 
@@ -126,14 +141,21 @@ run_disabled = not product_domain or (not generate_voc and not voc_input.strip()
 if st.button("🚀 Generate Backlog", type="primary", disabled=run_disabled, use_container_width=True):
 
     # ─── Reuse VOC preview if it exists ───
+    preview_reused = False
     if generate_voc and "voc_preview" in st.session_state:
         voc_input = st.session_state["voc_preview"]
         generate_voc = False  # Don't regenerate, we already have it
+        preview_reused = True
 
     # ─── Progress display ───
     progress_container = st.container()
     with progress_container:
         st.markdown("### ⚙️ Pipeline Running")
+        
+        # Show if we're reusing the preview
+        if preview_reused:
+            st.info("♻️ Reusing VOC preview (VOC generation skipped)")
+        
         steps = {
             "voc": st.empty(),
             "analyst": st.empty(),
@@ -144,7 +166,10 @@ if st.button("🚀 Generate Backlog", type="primary", disabled=run_disabled, use
         def update_step(key, icon, label):
             steps[key].markdown(f"{icon} **{label}**")
 
-        update_step("voc",      "⏳", "VOC Generator — preparing input...")
+        if preview_reused:
+            update_step("voc", "✅", "VOC Generator — skipped (using preview)")
+        else:
+            update_step("voc",      "⏳", "VOC Generator — preparing input...")
         update_step("analyst",  "🔲", "VOC Analyst — waiting")
         update_step("architect","🔲", "Requirement Architect — waiting")
         update_step("quality",  "🔲", "Quality Checker — waiting")
